@@ -1,0 +1,132 @@
+#!/bin/bash
+WIDTH=$1
+HIGHT=$2
+SHOWNAME=$3
+SOUNDNAME=$4
+LASTLENGTH=$5
+CHUNKSIZE=$6
+# Take a list of input files: -f files.lst
+# Create a video from a picture: -loop 1 -i picture.png
+# Fit video to screen: -vf "scale=$WIDTH:HIGHT:force_original_aspect_ratio=1,pad=$WIDTH:$HIGHT:(ow-iw)/2:(oh-ih)/2"
+# Define the output stream: -map [streamname]
+# Crossfade images: ffmpeg -loop 1 -t 5 -i 1.png -loop 1 -t 5 -i 2.png -filter_complex "[0][1]xfade=transition=fade:duration=1:offset=4,format=yuv420p" output.mp4
+if [ $# -lt 6 ]; then
+    echo "Parameter missing: $0 <with> <hight> <inputfile> <soundfile> <lastlength> <chunksize>"
+else
+    STARTTIME=`date`
+    COUNTER=1
+    while read -r FILENAME
+    do
+        # If the filename is empty create a black picture
+        if [ -n "$FILENAME" ]; then
+            echo $FILENAME
+            convert -auto-orient -resize $((WIDTH))x$HIGHT -extent $((WIDTH))x$HIGHT -gravity center -background black "$FILENAME" `printf "Bild%0.3i.png\n" $COUNTER`
+        else
+            echo '<black>'
+            convert -size $((WIDTH))x$HIGHT xc:black `printf "Bild%0.3i.png\n" $COUNTER`
+        fi
+        COUNTER=$((COUNTER+1))
+    done < "$SHOWNAME.lst"
+
+    if compgen -G "ffmpeg-input*.txt" > /dev/null; then rm ffmpeg-input*.txt; fi
+    if compgen -G "ffmpeg-filter*.txt" > /dev/null; then rm ffmpeg-filter*.txt; fi
+
+    FIELDCOUNTER=1
+    PARTCOUNTER=1
+    COUNT=0
+    NUMBER=0
+    LASTSTART=0
+    declare -a PARTCOUNT
+    declare -a PARTSTART
+    # No offset for the first filter file
+    PARTSTART[0]=0
+    for FIELD in $(cat "$SHOWNAME.txt"); do
+        # One have to count the fields to detect a newline
+        case "$FIELDCOUNTER" in
+            # Starttime
+            "1") START=$FIELD
+                # Length of the preceeding picture. New start last fade and last start
+                LENGTH=`python3 -c "print(\"{0:.1f}\".format($START + $FADETIME - $LASTSTART))"`
+                if [ $NUMBER -gt 1 ];then
+                    # create the loop for the preceeding picture
+                    echo `python3 -c "print(\" -loop 1 -t {0} -i Bild{1:03}.png\".format($LENGTH,$NUMBER))"` >> ffmpeg-input$((PARTCOUNTER)).txt
+                fi
+                if [ $COUNT -eq $((CHUNKSIZE)) ]; then
+                    PARTCOUNT[$PARTCOUNTER]=$((COUNT-1))
+                    PARTSTART[$PARTCOUNTER]=$START
+                    PARTCOUNTER=$((PARTCOUNTER+1))
+                    COUNT=0
+                    # create the same loop as start of the next video
+                    echo `python3 -c "print(\" -loop 1 -t {0} -i Bild{1:03}.png\".format($LENGTH,$NUMBER))"` >> ffmpeg-input$((PARTCOUNTER)).txt
+                fi
+                ;;
+            # Stoptime
+            "2") ;;
+            # Xfade duration
+            "3") FADETIME=`python3 -c "print(\"{0:.1f}\".format($FIELD /1000))"`
+                # Start of the current picture
+                OFFSET=`python3 -c "print(\"{0:.1f}\".format($START - ${PARTSTART[$((PARTCOUNTER-1))]}))"`
+                if [ $COUNT -eq 0 ];then
+                    if [ $NUMBER -eq 0 ];then
+                        # Fade in at the first picture of the slideshow
+                        echo -n "[0]fade=t=in:st=$START:d=$FADETIME[v0]" >> ffmpeg-filter$((PARTCOUNTER)).txt
+                    else
+                        echo -n "[0][1]xfade=transition=fade:duration=$FADETIME:offset=$OFFSET[v1]" >> ffmpeg-filter$((PARTCOUNTER)).txt
+                        COUNT=$((COUNT+1))
+                    fi
+                else
+                    echo -n ";[v$((COUNT-1))][$COUNT]xfade=transition=fade:duration=$FADETIME:offset=$OFFSET[v$COUNT]" >> ffmpeg-filter$((PARTCOUNTER)).txt
+                fi
+                if [ $NUMBER -eq 1 ];then
+                    # New start new fade from zero
+                    FIRSTLENGTH=`python3 -c "print(\"{0:.1f}\".format($START + $FADETIME))"`
+                    echo `python3 -c "print(\" -loop 1 -t {0} -i Bild{1:03}.png\".format($FIRSTLENGTH,$NUMBER))"` >> ffmpeg-input$((PARTCOUNTER)).txt
+                fi
+
+                LASTSTART=$START;
+                COUNT=$((COUNT+1))
+                NUMBER=$((NUMBER+1))
+                echo -n .
+                ;;
+        esac
+
+        FIELDCOUNTER=$((FIELDCOUNTER+1))
+        if [ $FIELDCOUNTER -gt 3 ]; then
+            FIELDCOUNTER=1
+        fi
+    done
+    echo
+    echo Count=$COUNT
+    echo PARTCOUNTER=$PARTCOUNTER
+    echo Fadetime=$FADETIME
+    echo Offset=$OFFSET
+    echo `python3 -c "print(\" -loop 1 -t {0} -i Bild{1:03}.png\".format($LASTLENGTH,$NUMBER))"` >> ffmpeg-input$((PARTCOUNTER)).txt
+    PARTCOUNT[$PARTCOUNTER]=$((COUNT-1))
+    PARTSTART[$PARTCOUNTER]=$START
+
+    # create the video for each part
+    for LOOPCOUNTER in $(seq 1 $PARTCOUNTER); do
+        echo LOOPCOUNTER=$LOOPCOUNTER
+        ffmpeg -hide_banner -y $(cat ffmpeg-input$LOOPCOUNTER.txt) -filter_complex $(cat ffmpeg-filter$LOOPCOUNTER.txt) -map [v${PARTCOUNT[$LOOPCOUNTER]}] video$LOOPCOUNTER.mp4
+        echo "-i video$((LOOPCOUNTER)).mp4" >> ffmpeg-input.txt
+        if [ $LOOPCOUNTER -eq 1 ]; then
+            echo -n "[1]setpts=PTS-STARTPTS+${PARTSTART[$LOOPCOUNTER]}/TB[ovr1];[0][ovr1]overlay=enable=gte(t\,${PARTSTART[$LOOPCOUNTER]})[v1]" >> ffmpeg-filter.txt
+        else
+            if [ $LOOPCOUNTER -lt $PARTCOUNTER ]; then
+                echo -n ";[$LOOPCOUNTER]setpts=PTS-STARTPTS+${PARTSTART[$LOOPCOUNTER]}/TB[ovr$LOOPCOUNTER];[v$((LOOPCOUNTER-1))][ovr$LOOPCOUNTER]overlay=enable=gte(t\,${PARTSTART[$LOOPCOUNTER]})[v$LOOPCOUNTER]" >> ffmpeg-filter.txt
+            fi
+        fi
+    done
+
+    # combine the parts
+    ffmpeg -hide_banner -y $(cat ffmpeg-input.txt) -filter_complex $(cat ffmpeg-filter.txt) -map [v$((LOOPCOUNTER-1))] video.mp4
+    # and add sound to the result
+    ffmpeg -hide_banner -y -i video.mp4 -i "$SOUNDNAME.wav" "$SHOWNAME.mp4"
+
+#    rm Bild*.png
+#    rm video*.mp4
+#    rm ffmpeg-input*.txt
+#    rm ffmpeg-filter*.txt
+    echo Starttime $STARTTIME
+    echo Stoptime `date`
+fi
