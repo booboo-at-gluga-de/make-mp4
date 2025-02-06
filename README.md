@@ -5,21 +5,22 @@ This script is using several parameters:
 
 ### Format of the output
 
-<with>
-<hight>
+with
+
+hight
 
 ### Name without extention of the input files
 
-<inputfile>
+inputfile
 
 ### Name without extention of the WAV file
 
-<soundfile>
+soundfile
 
 ### Duration of the last picture
 
-<lastlength>
+lastlength
 
 ### Number of picture per temp video
 
-<chunksize>
+chunksize
