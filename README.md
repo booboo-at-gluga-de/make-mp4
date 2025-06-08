@@ -24,9 +24,9 @@ This script is using several parameters:
 ### Duration of the last picture
 
 -l lastlength \
-(optional) Default: 4
+(optional) Default: 8
 
 ### Number of picture per temp video
 
 -c chunksize \
-(optional) Default: 4
+(optional) Default: 50
